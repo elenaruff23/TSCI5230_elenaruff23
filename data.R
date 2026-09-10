@@ -32,7 +32,7 @@ library(pander); # format tables
 library(dplyr); #add dplyr library
 library(lubridate) #date manipulation
 library(stringr) #string manipulation
-
+library(tidyr) # for pivot_wider function
 
 options(max.print=500);
 panderOptions('table.split.table',Inf); panderOptions('table.split.cells',Inf);
@@ -126,7 +126,7 @@ temp <- filter(dat$conditions.csv, DESCRIPTION == "Acute viral pharyngitis (diso
   group_by(month) %>% summarize(count=n())
 lm(count~month,temp) 
 
-# Summarizing observations
+# Top conditions summaries ----
 condition_slopes <- mutate(dat$conditions.csv,month = floor_date(START, unit = "month")) %>% 
   group_by(month,CODE,DESCRIPTION) %>% summarize(count=n()) %>% 
   group_by(CODE,DESCRIPTION) %>% filter(year(month)>=2023 &length(unique(month))>10) %>% 
@@ -136,8 +136,34 @@ condition_slopes <- mutate(dat$conditions.csv,month = floor_date(START, unit = "
 plot(condition_slopes$events,type="l")
 abline(v=25,col="red")
 # 25 is reasonable cutoff for increasing incidence of conditions 
-top_condition_slopes <- head(condition_slopes)
+top_condition_slopes <- head(condition_slopes, 25)$CODE
 
 
+# Code/name mapping 
+#codemap <- dat$conditions.csv[c("CODE","DESCRIPTION")] %>% unique() %>% # Removes all the duplicate rows 
+#  {setNames(.$DESCRIPTION,.$CODE)} # no longer a dataframe, now a vector with names # curly brackets "protect" the . 
+
+codemap <- dat$conditions.csv[c("CODE","DESCRIPTION")] %>% unique() %>% # Removes all the duplicate rows 
+  with(setNames(DESCRIPTION,CODE)) # no longer a dataframe, now a vector with names 
+# with() turns 1st argument into an environment for searching ease 
+
+# Code co-occurance ----
+# add criteria into one filter() argument using %in% %and% %or% etc. and return a T or F for each column as it does or does not fit the criteria
+patientcodes <- filter(dat$conditions.csv,CODE %in% top_condition_slopes)[c("PATIENT","CODE")] %>% 
+  unique() %>% mutate(PRESENT = 1) %>% 
+  pivot_wider(names_from = CODE, values_from = PRESENT, values_fill = 0) %>% # creates table where each patient is a row, columns are CODE, and PRESENT fills in your table values
+  select(-PATIENT) # select() behaves more predictably than .[] or .$ callouts
+
+npatients <- nrow(dat$patients.csv) # total no of patients
+codecombos <- combn(top_condition_slopes,2,simplify = FALSE)# creates pairwise comparison vectors including every possible combination of 2 codes
+
+#Creating function to 
+# {} take many expressions to return one value 
+fn_lift <- function(xx){
+  counta <- sum(patientcodes[[xx[1]]]) 
+  countb <- sum(patientcodes[[xx[2]]])
+  browser()
+}
+# [] makes a list within a list [[]]] calls out one value from a list; can be used for data frames too
 
 
