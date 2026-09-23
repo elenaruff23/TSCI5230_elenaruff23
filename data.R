@@ -33,6 +33,8 @@ library(dplyr); #add dplyr library
 library(lubridate) #date manipulation
 library(stringr) #string manipulation
 library(tidyr) # for pivot_wider function
+library(purrr) #for map() function
+
 
 options(max.print=500);
 panderOptions('table.split.table',Inf); panderOptions('table.split.cells',Inf);
@@ -149,21 +151,43 @@ codemap <- dat$conditions.csv[c("CODE","DESCRIPTION")] %>% unique() %>% # Remove
 
 # Code co-occurance ----
 # add criteria into one filter() argument using %in% %and% %or% etc. and return a T or F for each column as it does or does not fit the criteria
-patientcodes <- filter(dat$conditions.csv,CODE %in% top_condition_slopes)[c("PATIENT","CODE")] %>% 
-  unique() %>% mutate(PRESENT = 1) %>% 
-  pivot_wider(names_from = CODE, values_from = PRESENT, values_fill = 0) %>% # creates table where each patient is a row, columns are CODE, and PRESENT fills in your table values
-  select(-PATIENT) # select() behaves more predictably than .[] or .$ callouts
+patientcodes <- filter(dat$conditions.csv,CODE %in% top_condition_slopes) %>% 
+  distinct(PATIENT,CODE) %>% 
+  mutate(PRESENT = 1) %>% 
+  pivot_wider(names_from = CODE, values_from = PRESENT, values_fill = 0) # creates table where each patient is a row, columns are CODE, and PRESENT fills in your table values
+  #select(-PATIENT) # select() behaves more predictably than .[] or .$ callouts
 
+encountercodes <- filter(dat$conditions.csv,CODE %in% top_condition_slopes) %>% 
+  distinct(ENCOUNTER,CODE) %>% 
+  mutate(PRESENT = 1) %>% 
+  pivot_wider(names_from = CODE, values_from = PRESENT, values_fill = 0) # creates table where each patient is a row, columns are CODE, and PRESENT fills in your table values
+ 
 npatients <- nrow(dat$patients.csv) # total no of patients
+nencounters <- nrow(dat$encounters.csv)
 codecombos <- combn(top_condition_slopes,2,simplify = FALSE)# creates pairwise comparison vectors including every possible combination of 2 codes
 
 #Creating function to 
 # {} take many expressions to return one value 
-fn_lift <- function(xx){
-  counta <- sum(patientcodes[[xx[1]]]) 
-  countb <- sum(patientcodes[[xx[2]]])
-  browser()
-}
+fn_lift <- function(xx,codesource = patientcodes,denom = npatients){
+  counta <- sum(codesource[[xx[1]]]) 
+  countb <- sum(codesource[[xx[2]]])
+  expected <- counta*countb/denom
+  observed <- sum(codesource[[xx[1]]]*codesource[[xx[2]]])
+  out <- if(expected == 0){1} else{observed/expected} #if(the thing you want to replace){what you replace that value with} else{what it returns for everything else}
+  data.frame(CND_A = xx[],CND_B = rev(xx[]),LIFT = out) #
+  }
 # [] makes a list within a list [[]]] calls out one value from a list; can be used for data frames too
 
+patient_lift_matrix <- map(codecombos,fn_lift) %>% list_rbind() %>% 
+  mutate(CND_A = codemap[CND_A],CND_B = codemap[CND_B]) %>% 
+  xtabs(LIFT~CND_A + CND_B,data=.)
 
+encounter_lift_matrix <- map(codecombos,fn_lift, codesource = encountercodes, denom = nencounters) %>% list_rbind() %>% 
+  mutate(CND_A = codemap[CND_A],CND_B = codemap[CND_B]) %>% 
+  xtabs(LIFT~CND_A + CND_B,data=.)
+#xtabs cross tabulates a data frame, meaning it takes every combination of values 
+
+heatmap(log1p(patient_lift_matrix), symm = T,scale = "none", col=hcl.colors(50, "RdBu", rev=TRUE))
+
+e_heat <- heatmap(log1p(encounter_lift_matrix), symm = T,scale = "none", col=hcl.colors(50, "RdBu", rev=TRUE))
+colnames(encounter_lift_matrix)[e_heat$colInd]
