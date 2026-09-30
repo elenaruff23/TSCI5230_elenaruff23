@@ -205,13 +205,95 @@ heatmap(log1p(patient_lift_matrix), symm = T,scale = "none", col=hcl.colors(50, 
 # AI: Displays patient-level lift values as a heatmap after log transformation.
 
 e_heat <- heatmap(log1p(encounter_lift_matrix), symm = T,scale = "none", col=hcl.colors(50, "RdBu", rev=TRUE))
-systemic.conditions <- colnames(encounter_lift_matrix)[e_heat$colInd][18:25]
-local.conditions <- colnames(encounter_lift_matrix)[e_heat$colInd][-(3:5)] %>% setdiff(systemic.conditions)
+systemic_conditions <- colnames(encounter_lift_matrix)[e_heat$colInd][18:25]
+local_conditions <- colnames(encounter_lift_matrix)[e_heat$colInd][-(3:5)] %>% setdiff(systemic_conditions)
 
 
 # Summarize conditions by encounter ----
-group_by(dat$conditions.csv,ENCOUNTER,PATIENT) %>% summarize(local=length(intersect(local.conditions,DESCRIPTION))
-                                                     ,systemic=length(intersect(systemic.conditions,DESCRIPTION))
-                                                     ,first.condition.start=min(START,na.rm = T)
-                                                     ,last.condition.start=max(START,na.rm = T)
-                                                       )
+encounter_summary<- group_by(dat$conditions.csv,ENCOUNTER,PATIENT) %>% 
+  summarize(local=length(intersect(local_conditions,DESCRIPTION))
+            ,systemic=length(intersect(systemic_conditions,DESCRIPTION))
+            ,first_condition_start=min(START,na.rm = T)
+            ,last_condition_start=max(START,na.rm = T)
+            ,condition_type = case_when(
+              local > 0 & systemic > 0 ~ "both",
+              local > 0 ~ "local",
+              systemic > 0 ~ "systemic",
+              TRUE ~ "neither"
+                                                       ))
+#first_condition_start is a good proxy for encounter date 
+subset(encounter_summary,first_condition_start!=last_condition_start & condition_type!="neither")
+
+#Most encounters have more at least 4 different systemic conditions
+subset(encounter_summary,systemic > 0)$systemic %>% hist()
+
+# Most encounters have 1 local condition, none have more than 3
+subset(encounter_summary,local > 0)$local %>% hist()
+
+sum(encounter_summary$systemic > 0) #no. encounters with systemic conditions
+sum(encounter_summary$local > 0) #no. encounters with local conditions
+#no encounters have both local and systemic conditions 
+sum((encounter_summary$systemic > 0)*(encounter_summary$local > 0))
+
+#contingency table for systemic and local conditions
+with(encounter_summary,table(local,systemic))
+
+encounter_summary$condition_type %>% table() %>% prop.table()
+
+group
+
+# Summarize conditions by encounter ----
+encounter_summary<- group_by(dat$conditions.csv,ENCOUNTER,PATIENT) %>% 
+  summarize(local=length(intersect(local_conditions,DESCRIPTION))
+            ,systemic=length(intersect(systemic_conditions,DESCRIPTION))
+            ,first_condition_start=min(START,na.rm = T)
+            ,last_condition_start=max(START,na.rm = T)
+            ,condition_type = case_when(
+              local > 0 & systemic > 0 ~ "both",
+              local > 0 ~ "local",
+              systemic > 0 ~ "systemic",
+              TRUE ~ "neither"
+                                                       ))
+#first_condition_start is a good proxy for encounter date 
+subset(encounter_summary,first_condition_start!=last_condition_start & condition_type!="neither")
+
+#Most encounters have more at least 4 different systemic conditions
+subset(encounter_summary,systemic > 0)$systemic %>% hist()
+
+# Most encounters have 1 local condition, none have more than 3
+subset(encounter_summary,local > 0)$local %>% hist()
+
+sum(encounter_summary$systemic > 0) #no. encounters with systemic conditions
+sum(encounter_summary$local > 0) #no. encounters with local conditions
+#no encounters have both local and systemic conditions 
+sum((encounter_summary$systemic > 0)*(encounter_summary$local > 0))
+
+#contingency table for systemic and local conditions
+with(encounter_summary,table(local,systemic))
+
+encounter_summary$condition_type %>% table() %>% prop.table()
+
+patient_summary <- group_by(encounter_summary,PATIENT) %>% 
+  summarize(n_local = sum(local > 0)
+            ,n_systemic = sum(systemic > 0)
+            ,date_systemic = if(n_systemic > 0){min(first_condition_start[systemic>0])} else {NA}
+            ,date_local = if(n_local > 0){min(first_condition_start[local>0])} else {NA}
+            ,condition_order = case_when(
+              n_local > 0 & n_systemic == 0 ~ "local only",
+              n_systemic > 0 & n_local == 0 ~ "systemic only",
+              n_local > 0 & n_systemic > 0 & date_local < date_systemic ~ "local first",
+              n_local > 0 & n_systemic > 0 & date_systemic < date_local ~ "systemic first",
+              n_local > 0 & n_systemic > 0 & date_local == date_systemic ~ "same date",
+              TRUE ~ "neither"
+            )
+            ,interval = as.numeric(difftime(date_systemic, date_local, units = "days"))
+            #,debug = {if(n_local+n_systemic > 0){browser()}
+            #  0
+            #}
+)
+#period between local and systemic encounters most frequently between 0-20 days
+hist(patient_summary$interval,breaks=1000,xlim = c(0,50))
+
+#for next time: make histograms for each variable in patient_summary
+#link patient demographics of interest (such as geographical location - narrow to state-level)
+
