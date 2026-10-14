@@ -240,7 +240,6 @@ with(encounter_summary,table(local,systemic))
 
 encounter_summary$condition_type %>% table() %>% prop.table()
 
-group
 
 # Summarize conditions by encounter ----
 encounter_summary<- group_by(dat$conditions.csv,ENCOUNTER,PATIENT) %>% 
@@ -290,10 +289,135 @@ patient_summary <- group_by(encounter_summary,PATIENT) %>%
             #,debug = {if(n_local+n_systemic > 0){browser()}
             #  0
             #}
-)
+)%>%
+  left_join(dat$patients.csv,by=c("PATIENT"="Id"))
+
 #period between local and systemic encounters most frequently between 0-20 days
 hist(patient_summary$interval,breaks=1000,xlim = c(0,50))
 
 #for next time: make histograms for each variable in patient_summary
 #link patient demographics of interest (such as geographical location - narrow to state-level)
+
+
+#Missed class 10/7/26 - determine order of conditions per patient 
+# summarize patient-level patterns
+hist(patient_summary$n_local
+     ,breaks=30
+     ,main="Number of Local Conditions per Patient"
+     ,xlab="Number of Local Conditions")
+
+hist(patient_summary$n_systemic
+     ,breaks=30
+     ,main="Number of Systemic Conditions per Patient"
+     ,xlab="Number of Systemic Conditions")
+
+hist(patient_summary$interval
+     ,breaks=100
+     ,main="Interval Between Systemic and Local Conditions"
+     ,xlab="Interval (days)")
+
+barplot(table(patient_summary$condition_order)
+        ,main="Condition Order per Patient"
+        ,ylab="Number of Patients"
+        ,las=2)
+
+
+#History of disease spread ----
+
+# earliest local and systemic dates in the dataset
+patient_summary %>%
+  summarize(date_local=min(date_local,na.rm=T)
+            ,date_systemic=min(date_systemic,na.rm=T))
+
+# earliest local and systemic dates by state
+group_by(patient_summary,STATE) %>%
+  summarize(date_local=min(date_local,na.rm=T)
+            ,date_systemic=min(date_systemic,na.rm=T)) %>%
+  arrange(date_local,date_systemic)
+
+# earliest local and systemic dates by Texas city
+subset(patient_summary,STATE=="Texas" & !is.na(date_local)) %>%
+  group_by(CITY) %>%
+  summarize(date_local=min(date_local,na.rm=T)
+            ,date_systemic=min(date_systemic,na.rm=T)) %>%
+  arrange(date_local,date_systemic)
+
+
+#Create local/systemic patient and encounter lists ----
+local_encounters <- subset(encounter_summary,local>0)$ENCOUNTER
+systemic_encounters <- subset(encounter_summary,systemic>0)$ENCOUNTER
+local_patients <- subset(encounter_summary,local>0)$PATIENT %>% unique()
+systemic_patients <- subset(encounter_summary,systemic>0)$PATIENT %>% unique()
+
+
+#Procedures ----
+subset(dat$procedures.csv,ENCOUNTER %in% local_encounters)$DESCRIPTION %>%table() %>% sort()
+subset(dat$procedures.csv,ENCOUNTER %in% systemic_encounters)$DESCRIPTION %>%table() %>% sort()
+
+#Observations----
+subset(dat$observations.csv,ENCOUNTER %in% local_encounters)$DESCRIPTION %>%table() %>% sort()
+subset(dat$observations.csv,ENCOUNTER %in% systemic_encounters)$DESCRIPTION %>%table() %>% sort()
+
+#Number of records within each encounter for local and systemic conditions 
+subset(dat$observations.csv,ENCOUNTER %in% local_encounters) %>% nrow()
+
+
+#Creating a function to count number of rows local and systemic encounters per dataframe in dat
+fn_rows_encounters <- function(xx)
+{summarize(
+  dat[[xx]],
+  source = xx,
+  rows=n(),
+  rows_local = sum(ENCOUNTER %in% local_encounters,na.rm=T),
+  rows_systemic = sum(ENCOUNTER %in% systemic_encounters,na.rm=T),
+  encounters = length(unique(ENCOUNTER)),
+  encounters_local = length(intersect(ENCOUNTER,local_encounters)),
+  encounters_systemic = length(intersect(ENCOUNTER,systemic_encounters)),
+  rows_per_encounter = rows/encounters, 
+  rows_per_encounter_local = rows_local/encounters_local,
+  rows_per_encounter_systemic = rows_systemic/encounters_systemic
+    )}
+
+names(dat) %>% setdiff(c("encounters.csv","patients.csv")) %>% sapply(fn_rows,simplify = FALSE) %>% bind_rows()
+
+
+#Creating a function to count number of rows local and systemic patient phenotypes per dataframe in dat
+fn_rows_patients <- function(xx)
+{summarize(
+  dat[[xx]],
+  source = xx,
+  rows=n(),
+  rows_local = sum(PATIENT %in% local_patients,na.rm=T),
+  rows_systemic = sum(PATIENT %in% systemic_patients,na.rm=T),
+  patients = length(unique(PATIENT)),
+  patients_local = length(intersect(PATIENT,local_patients)),
+  patients_systemic = length(intersect(PATIENT,systemic_patients)),
+  rows_per_patients = rows/patients, 
+  rows_per_patient_local = rows_local/patients_local,
+  rows_per_patient_systemic = rows_systemic/patients_systemic
+)}
+
+names(dat) %>% setdiff(c("encounters.csv","patients.csv")) %>% sapply(fn_rows_patients,simplify = FALSE) %>% bind_rows()
+
+#standardize dataframes (except patients.csv - lacks same column naming system)
+transmute(dat$medications.csv,PATIENT, ENCOUNTER, CODE, DESCRIPTION, source = "medications") %>% filter(!is.na(CODE)) %>% View()
+transmute(dat$medications.csv,PATIENT, ENCOUNTER, CODE = REASONCODE, DESCRIPTION = REASONDESCRIPTION, source = "medications_reason") %>% filter(!is.na(CODE)) %>% View()
+
+fn_standardize <- function(xx){
+  if("SSN" %in% names(xx)){return(NULL)}
+  if("Id" %in% names(xx) & !"ENCOUNTER"%in% names(xx)){xx <- mutate(xx,ENCOUNTER = Id)}
+  out <- transmute(xx,PATIENT, ENCOUNTER, CODE = as.character(CODE), DESCRIPTION, subtype = "CODE") %>% filter(!is.na(CODE))
+  if(length(intersect(colnames(xx),c("REASONCODE","REASONDESCRIPTION"))) == 2){
+    out <- bind_rows(out,transmute(xx,PATIENT, ENCOUNTER, 
+                                   CODE = as.character(REASONCODE), DESCRIPTION = REASONDESCRIPTION, subtype = "REASON") %>% filter(!is.na(CODE)))
+    }
+  #browser(),
+  return(out)
+}
+
+#Test fn_standardize
+#fact_table <- fn_standardize(dat$encounters.csv)
+
+#Apply fn_standardize to all dataframes in dat
+fact_table <- sapply(dat,fn_standardize,simplify = FALSE) %>% bind_rows(.id = "type")
 
