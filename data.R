@@ -422,6 +422,147 @@ fn_standardize <- function(xx){
 fact_table <- sapply(dat,fn_standardize,simplify = FALSE) %>% bind_rows(.id = "type") %>% 
   filter(ENCOUNTER %in% dat$encounters.csv$Id)
 
+#11.4.26 Homework: Select variables from patients.csv that might be relevant to 
+#disease risk but not redundant with each other and try to come up with a strategy 
+#for shaping those into custom CODE/DESCRIPTIONS to add to fact_table 
+
+#Analysis constructed with ChatGPT 
+# Standardize patient demographic variables ----
+
+# Calculate income quartiles and standardize ZIP codes
+patients_standardized <- dat$patients.csv %>%
+  mutate(
+    INCOME_QUARTILE = ntile(INCOME, 4),
+    INCOME_QUARTILE = factor(
+      INCOME_QUARTILE,
+      levels = 1:4,
+      labels = c(
+        "Q1 - Lowest",
+        "Q2",
+        "Q3",
+        "Q4 - Highest"
+      )
+    ),
+    ZIP = str_pad(
+      as.character(ZIP),
+      width = 5,
+      side = "left",
+      pad = "0"
+    ),
+    PATIENT = Id,
+    ENCOUNTER = NA_character_
+  )
+
+
+# Select patient-level demographic variables
+patient_vars <- c(
+  "GENDER",
+  "RACE",
+  "ETHNICITY",
+  "INCOME_QUARTILE",
+  "ZIP",
+  "MARITAL"
+)
+
+# Standardize patient and encounter variables into CODE/DESCRIPTION format
+fn_patientstandardize <- function(xx, vars){
+  
+  if(!"PATIENT" %in% names(xx) & "Id" %in% names(xx)){
+    xx <- rename(xx, PATIENT = Id)
+  }
+  
+  if(!"ENCOUNTER" %in% names(xx)){
+    xx <- mutate(xx, ENCOUNTER = NA_character_)
+  }
+  
+  out <- xx %>%
+    select(
+      PATIENT,
+      ENCOUNTER,
+      all_of(vars)
+    ) %>%
+    pivot_longer(
+      cols = all_of(vars),
+      names_to = "CODE",
+      values_to = "DESCRIPTION"
+    ) %>%
+    mutate(
+      CODE = as.character(CODE),
+      DESCRIPTION = as.character(DESCRIPTION),
+      subtype = "PATIENT"
+    ) %>%
+    filter(
+      !is.na(DESCRIPTION),
+      DESCRIPTION != ""
+    ) %>%
+    select(
+      PATIENT,
+      ENCOUNTER,
+      CODE,
+      DESCRIPTION,
+      subtype
+    )
+  
+  return(out)
+}
+
+
+# Create standardized patient demographic records
+patient_demographics <- fn_patientstandardize(
+  patients_standardized,
+  vars = patient_vars
+) %>%
+  mutate(type = "patients")
+
+
+# Calculate age at each encounter ----
+
+encounter_age <- dat$encounters.csv %>%
+  transmute(
+    PATIENT,
+    ENCOUNTER = Id,
+    START = as.Date(START)
+  ) %>%
+  left_join(
+    dat$patients.csv %>%
+      transmute(
+        PATIENT = Id,
+        BIRTHDATE = as.Date(BIRTHDATE)
+      ),
+    by = "PATIENT"
+  ) %>%
+  mutate(
+    AGE_AT_ENCOUNTER = floor(
+      time_length(
+        interval(BIRTHDATE, START),
+        unit = "years"
+      )
+    ),
+    AGE_AT_ENCOUNTER = cut(
+      AGE_AT_ENCOUNTER,
+      breaks = c(-Inf, 17, 29, 49, 64, 74, 84, Inf),
+      labels = c(
+        "Under 18",
+        "18-29",
+        "30-49",
+        "50-64",
+        "65-74",
+        "75-84",
+        "85+"
+      )
+    )
+  ) %>%
+  filter(!is.na(AGE_AT_ENCOUNTER))
+
+
+# Combine fact_table and patient demographics into fact_table_2
+fact_table_2 <- fn_patientstandardize(
+  encounter_age,
+  vars = "AGE_AT_ENCOUNTER"
+) %>%
+  mutate(type = "encounter_age") %>% bind_rows(patient_demographics,fact_table) 
+
+
 #Code from 10/21 (out sick) 
 # Determine the number of encounters with a specified code "agitation"
 summarise(fact_table, encounter_no = length(unique(ENCOUNTER)),
@@ -599,206 +740,141 @@ patient_code_tallies %>%
          systemic_w_code, systemic_likelihood_ratio, systemic_OR)
 
 
-#11.4.26 Homework: Select variables from patients.csv that might be relevant to 
-#disease risk but not redundant with each other and try to come up with a strategy 
-#for shaping those into custom CODE/DESCRIPTIONS to add to fact_table 
+##making the pipe into a function with . %>%  to make it a function (this pipe is
+## not currently generic enough to run with other )
+fn_encounter_pipe <- . %>%   mutate(total_all_encounters = nrow(dat$encounters.csv)
+         , total_local_encounters = length(local_encounters)
+         , total_systemic_encounters = length(systemic_encounters)
+         , fraction_all_encounters_w_type =
+           all_encounters_w_type/total_all_encounters
+         , fraction_local_encounters_w_type =
+           local_encounters_w_type/total_local_encounters
+         , fraction_systemic_encounters_w_type =
+           systemic_encounters_w_type/total_systemic_encounters
+         # Local 2x2 cells
+         , local_encounters_no_type =
+           total_local_encounters - local_encounters_w_type
+         , nonlocal_encounters_w_type =
+           all_encounters_w_type - local_encounters_w_type
+         , nonlocal_encounters_no_type = total_all_encounters -
+           all_encounters_w_type - total_local_encounters +
+           local_encounters_w_type
+         # Systemic 2x2 cells
+         , systemic_encounters_no_type =
+           total_systemic_encounters - systemic_encounters_w_type
+         , nonsystemic_encounters_w_type =
+           all_encounters_w_type - systemic_encounters_w_type
+         , nonsystemic_encounters_no_type = total_all_encounters -
+           all_encounters_w_type - total_systemic_encounters +
+           systemic_encounters_w_type
+         # Haldane corrections
+         , haldane_local_encounters_w_type = local_encounters_w_type + 0.5
+         , haldane_local_encounters_no_type = local_encounters_no_type + 0.5
+         , haldane_nonlocal_encounters_w_type = nonlocal_encounters_w_type + 0.5
+         , haldane_nonlocal_encounters_no_type = nonlocal_encounters_no_type + 0.5
+         , haldane_systemic_encounters_w_type = systemic_encounters_w_type + 0.5
+         , haldane_systemic_encounters_no_type = systemic_encounters_no_type + 0.5
+         , haldane_nonsystemic_encounters_w_type = nonsystemic_encounters_w_type + 0.5
+         , haldane_nonsystemic_encounters_no_type = nonsystemic_encounters_no_type + 0.5
+         # Proportions, LR and OR: local
+         , local_type_prevalence = haldane_local_encounters_w_type /
+           (haldane_local_encounters_w_type + haldane_local_encounters_no_type)
+         , nonlocal_type_absence = haldane_nonlocal_encounters_no_type /
+           (haldane_nonlocal_encounters_w_type + haldane_nonlocal_encounters_no_type)
+         , local_likelihood_ratio = local_type_prevalence /
+           (1 - nonlocal_type_absence)
+         , local_OR = haldane_local_encounters_w_type *
+           haldane_nonlocal_encounters_no_type /
+           (haldane_local_encounters_no_type * haldane_nonlocal_encounters_w_type)
+         # Proportions, LR and OR: systemic
+         , systemic_type_prevalence = haldane_systemic_encounters_w_type /
+           (haldane_systemic_encounters_w_type + haldane_systemic_encounters_no_type)
+         , nonsystemic_type_absence = haldane_nonsystemic_encounters_no_type /
+           (haldane_nonsystemic_encounters_w_type + haldane_nonsystemic_encounters_no_type)
+         , systemic_likelihood_ratio = systemic_type_prevalence /
+           (1 - nonsystemic_type_absence)
+         , systemic_OR = haldane_systemic_encounters_w_type *
+           haldane_nonsystemic_encounters_no_type /
+           (haldane_systemic_encounters_no_type * haldane_nonsystemic_encounters_w_type)) %>%
+  arrange(desc(local_likelihood_ratio))
 
-#Analysis constructed with ChatGPT 
-# Standardize dataframes ----
+encounter_type_tallies <- fact_table %>% group_by(type) %>%
+  summarise(all_encounters_w_type = n_distinct(ENCOUNTER)
+            , local_encounters_w_type =
+              sum(unique(ENCOUNTER) %in% local_encounters)
+            , systemic_encounters_w_type =
+              sum(unique(ENCOUNTER) %in% systemic_encounters)
+            , .groups = "drop") %>% fn_encounter_pipe()
 
-fn_standardize <- function(xx){
-  if("SSN" %in% names(xx)){return(NULL)}
-  if("Id" %in% names(xx) & !"ENCOUNTER" %in% names(xx)){
-    xx <- mutate(xx,ENCOUNTER = Id)
-  }
-  
-  out <- transmute(
-    xx,
-    PATIENT,
-    ENCOUNTER,
-    CODE = as.character(CODE),
-    DESCRIPTION,
-    subtype = "CODE"
-  ) %>%
-    filter(!is.na(CODE))
-  
-  if(length(intersect(
-    colnames(xx),
-    c("REASONCODE","REASONDESCRIPTION")
-  )) == 2){
-    out <- bind_rows(
-      out,
-      transmute(
-        xx,
-        PATIENT,
-        ENCOUNTER,
-        CODE = as.character(REASONCODE),
-        DESCRIPTION = REASONDESCRIPTION,
-        subtype = "REASON"
-      ) %>%
-        filter(!is.na(CODE))
-    )
-  }
-  
-  return(out)
-}
-
-
-# Apply fn_standardize to all dataframes in dat
-fact_table <- sapply(
-  dat,
-  fn_standardize,
-  simplify = FALSE
-) %>%
-  bind_rows(.id = "type") %>%
-  filter(ENCOUNTER %in% dat$encounters.csv$Id)
-
-
-# Standardize patient demographic variables ----
-
-# Calculate income quartiles and standardize ZIP codes
-patients_standardized <- dat$patients.csv %>%
-  mutate(
-    INCOME_QUARTILE = ntile(INCOME, 4),
-    INCOME_QUARTILE = factor(
-      INCOME_QUARTILE,
-      levels = 1:4,
-      labels = c(
-        "Q1 - Lowest",
-        "Q2",
-        "Q3",
-        "Q4 - Highest"
-      )
-    ),
-    ZIP = str_pad(
-      as.character(ZIP),
-      width = 5,
-      side = "left",
-      pad = "0"
-    ),
-    PATIENT = Id,
-    ENCOUNTER = NA_character_
-  )
-
-
-# Select patient-level demographic variables
-patient_vars <- c(
-  "GENDER",
-  "RACE",
-  "ETHNICITY",
-  "INCOME_QUARTILE",
-  "ZIP",
-  "MARITAL"
-)
-
-# Standardize patient and encounter variables into CODE/DESCRIPTION format
-fn_patientstandardize <- function(xx, vars){
-  
-  if(!"PATIENT" %in% names(xx) & "Id" %in% names(xx)){
-    xx <- rename(xx, PATIENT = Id)
-  }
-  
-  if(!"ENCOUNTER" %in% names(xx)){
-    xx <- mutate(xx, ENCOUNTER = NA_character_)
-  }
-  
-  out <- xx %>%
-    select(
-      PATIENT,
-      ENCOUNTER,
-      all_of(vars)
-    ) %>%
-    pivot_longer(
-      cols = all_of(vars),
-      names_to = "CODE",
-      values_to = "DESCRIPTION"
-    ) %>%
-    mutate(
-      CODE = as.character(CODE),
-      DESCRIPTION = as.character(DESCRIPTION),
-      subtype = "PATIENT"
-    ) %>%
-    filter(
-      !is.na(DESCRIPTION),
-      DESCRIPTION != ""
-    ) %>%
-    select(
-      PATIENT,
-      ENCOUNTER,
-      CODE,
-      DESCRIPTION,
-      subtype
-    )
-  
-  return(out)
-}
+# Patients by type ----
+# Claude (Sonnet 5.5 Medium)
+patient_type_tallies <- fact_table %>%
+  group_by(type) %>%
+  summarise(all_patients_w_type = n_distinct(PATIENT)
+            , local_patients_w_type =
+              sum(unique(PATIENT) %in% local_patients)
+            , systemic_patients_w_type =
+              sum(unique(PATIENT) %in% systemic_patients)
+            , .groups = "drop") %>%
+  mutate(total_all_patients = nrow(dat$patients.csv)
+         , total_local_patients = length(local_patients)
+         , total_systemic_patients = length(systemic_patients)
+         , fraction_all_patients_w_type =
+           all_patients_w_type/total_all_patients
+         , fraction_local_patients_w_type =
+           local_patients_w_type/total_local_patients
+         , fraction_systemic_patients_w_type =
+           systemic_patients_w_type/total_systemic_patients
+         # Local 2x2 cells
+         , local_patients_no_type =
+           total_local_patients - local_patients_w_type
+         , nonlocal_patients_w_type =
+           all_patients_w_type - local_patients_w_type
+         , nonlocal_patients_no_type = total_all_patients -
+           all_patients_w_type - total_local_patients +
+           local_patients_w_type
+         # Systemic 2x2 cells
+         , systemic_patients_no_type =
+           total_systemic_patients - systemic_patients_w_type
+         , nonsystemic_patients_w_type =
+           all_patients_w_type - systemic_patients_w_type
+         , nonsystemic_patients_no_type = total_all_patients -
+           all_patients_w_type - total_systemic_patients +
+           systemic_patients_w_type
+         # Haldane corrections
+         , haldane_local_patients_w_type = local_patients_w_type + 0.5
+         , haldane_local_patients_no_type = local_patients_no_type + 0.5
+         , haldane_nonlocal_patients_w_type = nonlocal_patients_w_type + 0.5
+         , haldane_nonlocal_patients_no_type = nonlocal_patients_no_type + 0.5
+         , haldane_systemic_patients_w_type = systemic_patients_w_type + 0.5
+         , haldane_systemic_patients_no_type = systemic_patients_no_type + 0.5
+         , haldane_nonsystemic_patients_w_type = nonsystemic_patients_w_type + 0.5
+         , haldane_nonsystemic_patients_no_type = nonsystemic_patients_no_type + 0.5
+         # Proportions, LR and OR: local
+         , local_type_prevalence = haldane_local_patients_w_type /
+           (haldane_local_patients_w_type + haldane_local_patients_no_type)
+         , nonlocal_type_absence = haldane_nonlocal_patients_no_type /
+           (haldane_nonlocal_patients_w_type + haldane_nonlocal_patients_no_type)
+         , local_likelihood_ratio = local_type_prevalence /
+           (1 - nonlocal_type_absence)
+         , local_OR = haldane_local_patients_w_type *
+           haldane_nonlocal_patients_no_type /
+           (haldane_local_patients_no_type * haldane_nonlocal_patients_w_type)
+         # Proportions, LR and OR: systemic
+         , systemic_type_prevalence = haldane_systemic_patients_w_type /
+           (haldane_systemic_patients_w_type + haldane_systemic_patients_no_type)
+         , nonsystemic_type_absence = haldane_nonsystemic_patients_no_type /
+           (haldane_nonsystemic_patients_w_type + haldane_nonsystemic_patients_no_type)
+         , systemic_likelihood_ratio = systemic_type_prevalence /
+           (1 - nonsystemic_type_absence)
+         , systemic_OR = haldane_systemic_patients_w_type *
+           haldane_nonsystemic_patients_no_type /
+           (haldane_systemic_patients_no_type * haldane_nonsystemic_patients_w_type)) %>%
+  arrange(desc(local_likelihood_ratio))
 
 
-# Create standardized patient demographic records
-patient_demographics <- fn_patientstandardize(
-  patients_standardized,
-  vars = patient_vars
-) %>%
-  mutate(type = "patients")
+
+#To Do 11.11.26:
+#Create new R file for all functions and have it pull from there
 
 
-# Calculate age at each encounter ----
-
-encounter_age <- dat$encounters.csv %>%
-  transmute(
-    PATIENT,
-    ENCOUNTER = Id,
-    START = as.Date(START)
-  ) %>%
-  left_join(
-    dat$patients.csv %>%
-      transmute(
-        PATIENT = Id,
-        BIRTHDATE = as.Date(BIRTHDATE)
-      ),
-    by = "PATIENT"
-  ) %>%
-  mutate(
-    AGE_AT_ENCOUNTER = floor(
-      time_length(
-        interval(BIRTHDATE, START),
-        unit = "years"
-      )
-    ),
-    AGE_AT_ENCOUNTER = cut(
-      AGE_AT_ENCOUNTER,
-      breaks = c(-Inf, 17, 29, 49, 64, 74, 84, Inf),
-      labels = c(
-        "Under 18",
-        "18-29",
-        "30-49",
-        "50-64",
-        "65-74",
-        "75-84",
-        "85+"
-      )
-    )
-  ) %>%
-  filter(!is.na(AGE_AT_ENCOUNTER))
-
-
-# Standardize encounter-level age records
-encounter_age_codes <- fn_patientstandardize(
-  encounter_age,
-  vars = "AGE_AT_ENCOUNTER"
-) %>%
-  mutate(type = "encounter_age")
-
-
-# Combine demographic and age records
-demographic_fact_table <- bind_rows(
-  patient_demographics,
-  encounter_age_codes
-)
-
-
-# Add demographic and age records to fact_table
-fact_table <- bind_rows(
-  fact_table,
-  demographic_fact_table
-) 
