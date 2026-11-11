@@ -418,7 +418,7 @@ fn_standardize <- function(xx){
 #Test fn_standardize
 #fact_table <- fn_standardize(dat$encounters.csv)
 
-#Apply fn_standardize to all dataframes in dat
+#fact_table: Apply fn_standardize to all dataframes in dat ----
 fact_table <- sapply(dat,fn_standardize,simplify = FALSE) %>% bind_rows(.id = "type") %>% 
   filter(ENCOUNTER %in% dat$encounters.csv$Id)
 
@@ -446,6 +446,7 @@ fn_encounter_codes("24199005")
 # Code tallies by encounter: local and systemic associations ----
 # One row per code; both phenotype comparisons use the same base counts.
 encounter_code_tallies <- fact_table %>%
+  filter(!is.na(ENCOUNTER)) %>% 
   group_by(CODE, DESCRIPTION, type, subtype) %>%
   summarise(
     encounters_w_code = n_distinct(ENCOUNTER),
@@ -503,13 +504,13 @@ encounter_code_tallies %>%
   arrange(desc(local_likelihood_ratio)) %>%
   filter(!DESCRIPTION %in% local_conditions) %>%
   select(CODE, DESCRIPTION, type, subtype, encounters_w_code,
-         local_w_code, local_likelihood_ratio, local_OR)
+         local_w_code, local_likelihood_ratio, local_OR) %>% View()
 
 encounter_code_tallies %>%
   arrange(desc(systemic_likelihood_ratio)) %>%
   filter(!DESCRIPTION %in% systemic_conditions, systemic_w_code > 100) %>%
   select(CODE, DESCRIPTION, type, subtype, encounters_w_code,
-         systemic_w_code, systemic_likelihood_ratio, systemic_OR)
+         systemic_w_code, systemic_likelihood_ratio, systemic_OR) 
 
 # Code tallies by patient: local and systemic associations ----
 # Summarize the number of local, systemic, and total codes/encounters per patient.
@@ -596,3 +597,208 @@ patient_code_tallies %>%
   filter(!DESCRIPTION %in% systemic_conditions, systemic_w_code > 100) %>%
   select(CODE, DESCRIPTION, type, subtype, patients_w_code,
          systemic_w_code, systemic_likelihood_ratio, systemic_OR)
+
+
+#11.4.26 Homework: Select variables from patients.csv that might be relevant to 
+#disease risk but not redundant with each other and try to come up with a strategy 
+#for shaping those into custom CODE/DESCRIPTIONS to add to fact_table 
+
+#Analysis constructed with ChatGPT 
+# Standardize dataframes ----
+
+fn_standardize <- function(xx){
+  if("SSN" %in% names(xx)){return(NULL)}
+  if("Id" %in% names(xx) & !"ENCOUNTER" %in% names(xx)){
+    xx <- mutate(xx,ENCOUNTER = Id)
+  }
+  
+  out <- transmute(
+    xx,
+    PATIENT,
+    ENCOUNTER,
+    CODE = as.character(CODE),
+    DESCRIPTION,
+    subtype = "CODE"
+  ) %>%
+    filter(!is.na(CODE))
+  
+  if(length(intersect(
+    colnames(xx),
+    c("REASONCODE","REASONDESCRIPTION")
+  )) == 2){
+    out <- bind_rows(
+      out,
+      transmute(
+        xx,
+        PATIENT,
+        ENCOUNTER,
+        CODE = as.character(REASONCODE),
+        DESCRIPTION = REASONDESCRIPTION,
+        subtype = "REASON"
+      ) %>%
+        filter(!is.na(CODE))
+    )
+  }
+  
+  return(out)
+}
+
+
+# Apply fn_standardize to all dataframes in dat
+fact_table <- sapply(
+  dat,
+  fn_standardize,
+  simplify = FALSE
+) %>%
+  bind_rows(.id = "type") %>%
+  filter(ENCOUNTER %in% dat$encounters.csv$Id)
+
+
+# Standardize patient demographic variables ----
+
+# Calculate income quartiles and standardize ZIP codes
+patients_standardized <- dat$patients.csv %>%
+  mutate(
+    INCOME_QUARTILE = ntile(INCOME, 4),
+    INCOME_QUARTILE = factor(
+      INCOME_QUARTILE,
+      levels = 1:4,
+      labels = c(
+        "Q1 - Lowest",
+        "Q2",
+        "Q3",
+        "Q4 - Highest"
+      )
+    ),
+    ZIP = str_pad(
+      as.character(ZIP),
+      width = 5,
+      side = "left",
+      pad = "0"
+    ),
+    PATIENT = Id,
+    ENCOUNTER = NA_character_
+  )
+
+
+# Select patient-level demographic variables
+patient_vars <- c(
+  "GENDER",
+  "RACE",
+  "ETHNICITY",
+  "INCOME_QUARTILE",
+  "ZIP",
+  "MARITAL"
+)
+
+# Standardize patient and encounter variables into CODE/DESCRIPTION format
+fn_patientstandardize <- function(xx, vars){
+  
+  if(!"PATIENT" %in% names(xx) & "Id" %in% names(xx)){
+    xx <- rename(xx, PATIENT = Id)
+  }
+  
+  if(!"ENCOUNTER" %in% names(xx)){
+    xx <- mutate(xx, ENCOUNTER = NA_character_)
+  }
+  
+  out <- xx %>%
+    select(
+      PATIENT,
+      ENCOUNTER,
+      all_of(vars)
+    ) %>%
+    pivot_longer(
+      cols = all_of(vars),
+      names_to = "CODE",
+      values_to = "DESCRIPTION"
+    ) %>%
+    mutate(
+      CODE = as.character(CODE),
+      DESCRIPTION = as.character(DESCRIPTION),
+      subtype = "PATIENT"
+    ) %>%
+    filter(
+      !is.na(DESCRIPTION),
+      DESCRIPTION != ""
+    ) %>%
+    select(
+      PATIENT,
+      ENCOUNTER,
+      CODE,
+      DESCRIPTION,
+      subtype
+    )
+  
+  return(out)
+}
+
+
+# Create standardized patient demographic records
+patient_demographics <- fn_patientstandardize(
+  patients_standardized,
+  vars = patient_vars
+) %>%
+  mutate(type = "patients")
+
+
+# Calculate age at each encounter ----
+
+encounter_age <- dat$encounters.csv %>%
+  transmute(
+    PATIENT,
+    ENCOUNTER = Id,
+    START = as.Date(START)
+  ) %>%
+  left_join(
+    dat$patients.csv %>%
+      transmute(
+        PATIENT = Id,
+        BIRTHDATE = as.Date(BIRTHDATE)
+      ),
+    by = "PATIENT"
+  ) %>%
+  mutate(
+    AGE_AT_ENCOUNTER = floor(
+      time_length(
+        interval(BIRTHDATE, START),
+        unit = "years"
+      )
+    ),
+    AGE_AT_ENCOUNTER = cut(
+      AGE_AT_ENCOUNTER,
+      breaks = c(-Inf, 17, 29, 49, 64, 74, 84, Inf),
+      labels = c(
+        "Under 18",
+        "18-29",
+        "30-49",
+        "50-64",
+        "65-74",
+        "75-84",
+        "85+"
+      )
+    )
+  ) %>%
+  filter(!is.na(AGE_AT_ENCOUNTER))
+
+
+# Standardize encounter-level age records
+encounter_age_codes <- fn_patientstandardize(
+  encounter_age,
+  vars = "AGE_AT_ENCOUNTER"
+) %>%
+  mutate(type = "encounter_age")
+
+
+# Combine demographic and age records
+demographic_fact_table <- bind_rows(
+  patient_demographics,
+  encounter_age_codes
+)
+
+
+# Add demographic and age records to fact_table
+fact_table <- bind_rows(
+  fact_table,
+  demographic_fact_table
+) 
